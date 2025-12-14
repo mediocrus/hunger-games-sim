@@ -1,119 +1,166 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Hunger Games Lobby</title>
-<style>
-.selected { background-color: lightgreen; font-weight: bold; }
-li { margin: 5px 0; cursor: pointer; }
-button { margin-top: 10px; padding: 10px 15px; font-size: 16px; }
-#results { margin-top: 20px; white-space: pre-line; }
-</style>
+    <meta charset="UTF-8">
+    <title>Hunger Games Simulator</title>
 </head>
 <body>
-<h1>Hunger Games Lobby</h1>
-<p>Select your tribute (one per device):</p>
-<ul id="tribute-list"></ul>
-<button id="submit-selection">Submit Selection</button>
-<button id="start-game">Start Game</button>
+    <h1>Hunger Games Simulator</h1>
 
-<div id="action-buttons" style="display:none;">
-  <h2>Choose your action:</h2>
-  <button data-action="attack">Attack</button>
-  <button data-action="defend">Defend</button>
-  <select id="target-select"></select>
-</div>
+    <!-- Party creation / join section -->
+    <div id="party-section">
+        <input type="text" id="party-password" placeholder="Party Password">
+        <button id="create-party">Create Party</button>
+        <input type="text" id="join-tribute" placeholder="Tribute Name">
+        <button id="join-party">Join Party</button>
+        <p id="party-message"></p>
+        <p id="players-list"></p>
 
-<div id="results"></div>
+        <h3>Available Tributes:</h3>
+        <ul id="tribute-list"></ul>
 
-<script>
-let playerName = null;
-let turnOrder = [];
+        <button id="start-game" disabled>Start Game</button>
+    </div>
 
-// Fetch tributes
-function loadTributes() {
-  fetch('/tributes')
-    .then(res => res.json())
-    .then(data => {
-      const ul = document.getElementById('tribute-list');
-      ul.innerHTML = '';
-      data.forEach(t => {
-        const li = document.createElement('li');
-        li.textContent = t.name;
-        if (t.taken) li.style.color = 'gray';
-        li.addEventListener('click', () => {
-          if (t.taken) { alert('Tribute already taken'); return; }
-          playerName = t.name;
-          console.log('You selected:', playerName);
+    <!-- Combat options -->
+    <div id="combat-options" style="display:none;">
+        <p id="combat-message"></p>
+        <select id="target-select"></select>
+        <button id="attack-btn">Attack</button>
+        <button id="defend-btn">Defend</button>
+        <button id="submit-action">Submit Action</button>
+        <button id="reset-game">Reset Game</button>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+
+        const partySection = document.getElementById('party-section');
+        const combatDiv = document.getElementById('combat-options');
+
+        const partyPasswordInput = document.getElementById('party-password');
+        const joinTributeInput = document.getElementById('join-tribute');
+        const createPartyBtn = document.getElementById('create-party');
+        const joinPartyBtn = document.getElementById('join-party');
+        const startGameBtn = document.getElementById('start-game');
+        const resetGameBtn = document.getElementById('reset-game');
+        const partyMessage = document.getElementById('party-message');
+        const playersList = document.getElementById('players-list');
+        const tributeList = document.getElementById('tribute-list');
+
+        const combatMessage = document.getElementById('combat-message');
+        const targetSelect = document.getElementById('target-select');
+        const attackBtn = document.getElementById('attack-btn');
+        const defendBtn = document.getElementById('defend-btn');
+        const submitAction = document.getElementById('submit-action');
+
+        let currentParty = '';
+        let isHost = false;
+        let selectedAction = null;
+        let selectedTarget = null;
+
+        // --- Party events ---
+        createPartyBtn.onclick = () => {
+            const password = partyPasswordInput.value.trim();
+            if (!password) return alert('Enter a password.');
+            socket.emit('createParty', password);
+        };
+
+        joinPartyBtn.onclick = () => {
+            const password = partyPasswordInput.value.trim();
+            const tributeName = joinTributeInput.value.trim();
+            if (!password || !tributeName) return alert('Enter password and tribute name.');
+            currentParty = password;
+            socket.emit('joinParty', { password, tributeName });
+        };
+
+        startGameBtn.onclick = () => {
+            socket.emit('startGame', currentParty);
+        };
+
+        resetGameBtn.onclick = () => {
+            socket.emit('resetParty', currentParty);
+        };
+
+        // --- Combat events ---
+        attackBtn.onclick = () => selectedAction = 'attack';
+        defendBtn.onclick = () => selectedAction = 'defend';
+        submitAction.onclick = () => {
+            selectedTarget = targetSelect.value;
+            if (!selectedAction) return alert('Choose an action!');
+            socket.emit('playerAction', { password: currentParty, action: selectedAction, targetName: selectedTarget });
+            selectedAction = null;
+            combatDiv.style.display = 'none';
+        };
+
+        // --- Socket listeners ---
+        socket.on('partyCreated', (password) => {
+            currentParty = password;
+            isHost = true;
+            startGameBtn.disabled = false;
+            partyMessage.textContent = `Party created: ${password}. You are the host.`;
         });
-        ul.appendChild(li);
-      });
-    });
-}
 
-loadTributes();
+        socket.on('joinedParty', ({ password, tributeName, host }) => {
+            currentParty = password;
+            isHost = host;
+            startGameBtn.disabled = !host;
+            partyMessage.textContent = `Joined party: ${password} as ${tributeName}`;
+        });
 
-// Submit selection
-document.getElementById('submit-selection').addEventListener('click', () => {
-  if (!playerName) { alert('Select a tribute!'); return; }
-  fetch('/select', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ selectedTribute: playerName })
-  })
-  .then(res=>res.json())
-  .then(data=>{
-    if(data.error){ alert(data.error); loadTributes(); return; }
-    alert('Selection submitted!');
-    loadTributes();
-  });
-});
+        socket.on('updatePlayers', (players) => {
+            playersList.textContent = 'Players in party: ' + players.join(', ');
+        });
 
-// Start game
-document.getElementById('start-game').addEventListener('click', () => {
-  fetch('/start',{method:'POST'})
-    .then(res=>res.json())
-    .then(data=>{
-      turnOrder = data.turnOrder;
-      document.getElementById('action-buttons').style.display = 'block';
-      updateTargets();
-      appendResult('Game started! Turn order: ' + turnOrder.join(', '));
-    });
-});
+        socket.on('updateAvailableTributes', (tributes) => {
+            tributeList.innerHTML = '';
+            tributes.forEach(t => {
+                const li = document.createElement('li');
+                li.textContent = `${t.name} ${t.taken ? '(Taken)' : ''}`;
+                tributeList.appendChild(li);
+            });
+        });
 
-// Action buttons
-document.querySelectorAll('#action-buttons button[data-action]').forEach(btn=>{
-  btn.addEventListener('click', ()=>{
-    const action = btn.dataset.action;
-    const target = document.getElementById('target-select').value;
-    if(action==='attack' && !target){ alert('Select a target'); return; }
+        socket.on('partyError', (msg) => {
+            partyMessage.textContent = msg;
+        });
 
-    fetch('/action',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ action, target })
-    })
-    .then(res=>res.json())
-    .then(data=>{
-      appendResult(data.results.join('\n'));
-      updateTargets();
-    });
-  });
-});
+        socket.on('gameStarted', () => {
+            partyMessage.textContent = 'Game started!';
+            partySection.style.display = 'none';
+            combatDiv.style.display = 'block';
+        });
 
-function updateTargets(){
-  const select = document.getElementById('target-select');
-  select.innerHTML = '';
-  turnOrder.forEach(name=>{
-    select.innerHTML += `<option value="${name}">${name}</option>`;
-  });
-}
+        socket.on('combatUpdate', (messages) => {
+            combatMessage.textContent = messages.join('\n');
+        });
 
-function appendResult(text){
-  const div = document.getElementById('results');
-  div.textContent = text;
-}
-</script>
+        socket.on('yourTurn', ({ tributeName, targets }) => {
+            combatDiv.style.display = 'block';
+            combatMessage.textContent = `It's your turn: ${tributeName}`;
+            targetSelect.innerHTML = '';
+            targets.forEach(t => {
+                const option = document.createElement('option');
+                option.value = t;
+                option.textContent = t;
+                targetSelect.appendChild(option);
+            });
+        });
+
+        socket.on('gameOver', (winner) => {
+            combatMessage.textContent = `Game over! Winner: ${winner}`;
+            combatDiv.style.display = 'none';
+            partySection.style.display = 'block';
+        });
+
+        socket.on('partyReset', () => {
+            combatDiv.style.display = 'none';
+            partySection.style.display = 'block';
+            partyMessage.textContent = 'Tributes reset! You can create or join a party again.';
+            playersList.textContent = '';
+            tributeList.innerHTML = '';
+        });
+    </script>
 </body>
 </html>

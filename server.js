@@ -1,160 +1,227 @@
 const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
 const path = require('path');
-const session = require('express-session');
-const tributesData = require('./data/tributes');
+const allTributes = require('./data/tributes');
 
 const app = express();
-const PORT = 3000;
+const server = http.createServer(app);
+const io = socketIo(server);
 
-app.use(express.json());
-app.use(session({
-  secret: 'hunger-games-secret',
-  resave: false,
-  saveUninitialized: true
-}));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Game state
-let claimedTributes = {}; // { sessionID: tributeName }
-let aiTributes = [];
-let combatStarted = false;
-let turnOrder = [];
-let tributeStats = {};
-let currentTurnIndex = 0;
-let combatResults = [];
+const maxPlayers = 8;
 
-// Serve root
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
-
-// Get tribute data
-app.get('/tributes', (req, res) => {
-  // Include which tributes are taken
-  const taken = Object.values(claimedTributes);
-  const data = tributesData.map(t => ({
-    name: t.name,
-    taken: taken.includes(t.name)
-  }));
-  res.json(data);
-});
-
-// Select a tribute
-app.post('/select', (req, res) => {
-  if (combatStarted) return res.status(400).json({ error: 'Game already started' });
-
-  const selected = req.body.selectedTribute; // one tribute per device
-  const sessionID = req.sessionID;
-
-  if (!selected) return res.status(400).json({ error: 'No tribute selected' });
-
-  // Check if already taken
-  if (Object.values(claimedTributes).includes(selected)) {
-    return res.status(400).json({ error: 'Tribute already taken' });
-  }
-
-  claimedTributes[sessionID] = selected;
-
-  // Update AI tributes
-  aiTributes = tributesData.map(t => t.name)
-    .filter(n => !Object.values(claimedTributes).includes(n));
-
-  res.json({ message: 'Selection saved', playerTributes: Object.values(claimedTributes), aiTributes });
-});
-
-// Start the game (host only)
-app.post('/start', (req, res) => {
-  if (combatStarted) return res.status(400).json({ error: 'Game already started' });
-
-  combatStarted = true;
-
-  const allTributes = [...Object.values(claimedTributes), ...aiTributes];
-
-  // Initialize tribute stats
-  tributeStats = {};
-  allTributes.forEach(name => {
-    const t = tributesData.find(tr => tr.name === name);
-    tributeStats[name] = {
-      health: t.Health,
-      strength: t.Strength,
-      speed: t.Speed,
-      stamina: t.Stamina,
-      alive: true
-    };
-  });
-
-  // Determine turn order
-  turnOrder = [...allTributes].sort((a,b) => tributeStats[b].speed - tributeStats[a].speed);
-
-  combatResults = [];
-  currentTurnIndex = 0;
-
-  res.json({ message: 'Combat started', turnOrder });
-});
-
-// Handle player action
-app.post('/action', (req, res) => {
-  if (!combatStarted) return res.status(400).json({ error: 'Combat not started' });
-
-  const { action, target } = req.body;
-  const sessionID = req.sessionID;
-  const player = claimedTributes[sessionID];
-
-  if (!player) return res.status(400).json({ error: 'You have not selected a tribute' });
-  if (!tributeStats[player].alive) return res.status(400).json({ error: 'Your tribute is dead' });
-
-  // Resolve player's action
-  resolveAction(player, action, target);
-
-  // Resolve AI turns until next player
-  let nextPlayerFound = false;
-  while (!nextPlayerFound) {
-    currentTurnIndex = (currentTurnIndex + 1) % turnOrder.length;
-    const currentTribute = turnOrder[currentTurnIndex];
-    if (!tributeStats[currentTribute].alive) continue;
-
-    if (Object.values(claimedTributes).includes(currentTribute)) {
-      nextPlayerFound = true;
-      break;
-    } else {
-      // AI randomly attacks a living target
-      const aliveTargets = Object.keys(tributeStats).filter(n => tributeStats[n].alive && n !== currentTribute);
-      if (aliveTargets.length === 0) break;
-      const targetAI = aliveTargets[Math.floor(Math.random()*aliveTargets.length)];
-      const aiAction = Math.random() < 0.7 ? 'attack' : 'defend';
-      resolveAction(currentTribute, aiAction, targetAI);
-    }
-  }
-
-  // Check for winner
-  const alive = Object.keys(tributeStats).filter(n => tributeStats[n].alive);
-  if (alive.length === 1) {
-    combatStarted = false;
-    combatResults.push(`${alive[0]} is the winner!`);
-  }
-
-  res.json({ results: combatResults });
-});
-
-// Resolve action
-function resolveAction(performer, action, targetName) {
-  if (!tributeStats[performer].alive) return;
-
-  if (action === 'attack') {
-    const target = tributeStats[targetName];
-    if (!target || !target.alive) return;
-    const damage = tributeStats[performer].strength * (0.5 + Math.random()*0.5);
-    target.health -= damage;
-    if (target.health <= 0) {
-      target.alive = false;
-      combatResults.push(`${performer} attacked ${targetName} for ${damage.toFixed(1)} damage and killed them!`);
-    } else {
-      combatResults.push(`${performer} attacked ${targetName} for ${damage.toFixed(1)} damage. ${targetName} has ${target.health.toFixed(1)} HP left.`);
-    }
-  } else if (action === 'defend') {
-    tributeStats[performer].health += tributeStats[performer].stamina * 0.3;
-    combatResults.push(`${performer} defends and recovers some health (now ${tributeStats[performer].health.toFixed(1)} HP).`);
+// Data structures
+let parties = {};
+/*
+Structure:
+parties = {
+  partyPassword: {
+    hostId: 'socketId',
+    players: { socketId: tributeName },
+    activeTributes: [],
+    turnOrder: [],
+    currentTurnIndex: 0,
+    combatMessages: [],
+    gameStarted: false
   }
 }
+*/
 
-app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
+// Utility functions
+function shuffle(array) {
+    for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+    }
+}
+
+function getTributeByName(array, name) {
+    return array.find(t => t.name === name);
+}
+
+function computeDamage(attacker, defender) {
+    let atk = Number(attacker.strength) || 1;
+    let dex = Number(attacker.dexterity) || 1;
+    let defStam = Number(defender.stamina) || 1;
+
+    let baseDamage = (atk * dex) / 10 - (defStam / 2);
+    if (defender.defending) {
+        baseDamage *= 0.5;
+        defender.defending = false;
+    }
+    return Math.max(1, Math.round(baseDamage));
+}
+
+function tributeAction(party, tribute, action, targetName) {
+    let target = getTributeByName(party.activeTributes, targetName);
+    if (!target) return;
+
+    if (action === 'attack') {
+        let damage = computeDamage(tribute, target);
+        target.health -= damage;
+        party.combatMessages.push(`${tribute.name} attacks ${target.name} for ${damage} damage.`);
+        if (target.health <= 0) {
+            party.combatMessages.push(`${target.name} has died!`);
+            party.activeTributes = party.activeTributes.filter(t => t.health > 0);
+        }
+    } else if (action === 'defend') {
+        tribute.defending = true;
+        party.combatMessages.push(`${tribute.name} is defending this turn.`);
+    }
+}
+
+function AIAction(party, tribute) {
+    let targets = party.activeTributes.filter(t => t.name !== tribute.name);
+    if (targets.length === 0) return;
+    let target = targets[Math.floor(Math.random() * targets.length)];
+    tributeAction(party, tribute, 'attack', target.name);
+}
+
+function nextTurn(partyPassword) {
+    let party = parties[partyPassword];
+    if (!party || !party.gameStarted) return;
+
+    if (party.activeTributes.length <= 1) {
+        io.to(party.hostId).emit('gameOver', party.activeTributes[0] ? party.activeTributes[0].name : 'No one');
+        party.gameStarted = false;
+        return;
+    }
+
+    if (party.currentTurnIndex >= party.turnOrder.length) {
+        shuffle(party.turnOrder);
+        party.currentTurnIndex = 0;
+    }
+
+    let currentTributeName = party.turnOrder[party.currentTurnIndex];
+    let tribute = getTributeByName(party.activeTributes, currentTributeName);
+    if (!tribute) {
+        party.currentTurnIndex++;
+        nextTurn(partyPassword);
+        return;
+    }
+
+    if (tribute.isAI) {
+        AIAction(party, tribute);
+        io.to(party.hostId).emit('combatUpdate', party.combatMessages);
+        party.combatMessages = [];
+        party.currentTurnIndex++;
+        setTimeout(() => nextTurn(partyPassword), 1000);
+    } else {
+        io.to(tribute.socketId).emit('yourTurn', {
+            tributeName: tribute.name,
+            targets: party.activeTributes.filter(t => t.name !== tribute.name).map(t => t.name)
+        });
+    }
+}
+
+io.on('connection', (socket) => {
+    console.log('New connection:', socket.id);
+
+    // Create party
+    socket.on('createParty', (password) => {
+        if (parties[password]) return socket.emit('partyError', 'Party already exists.');
+        parties[password] = {
+            hostId: socket.id,
+            players: {},
+            activeTributes: [],
+            turnOrder: [],
+            currentTurnIndex: 0,
+            combatMessages: [],
+            gameStarted: false
+        };
+        socket.emit('partyCreated', password);
+    });
+
+    // Join party
+    socket.on('joinParty', ({ password, tributeName }) => {
+        let party = parties[password];
+        if (!party) return socket.emit('partyError', 'Party does not exist.');
+        if (party.gameStarted) return socket.emit('partyError', 'Game already started.');
+        if (Object.keys(party.players).length >= maxPlayers) return socket.emit('partyError', 'Party is full.');
+        if (Object.values(party.players).includes(tributeName)) return socket.emit('partyError', 'Tribute already taken.');
+
+        party.players[socket.id] = tributeName;
+        socket.emit('joinedParty', { password, tributeName, host: socket.id === party.hostId });
+        io.to(party.hostId).emit('updatePlayers', Object.values(party.players));
+
+        // Send current available tributes to all party members
+        const takenTributes = Object.values(party.players);
+        io.to(password).emit('updateAvailableTributes', allTributes.map(t => ({
+            name: t.name,
+            taken: takenTributes.includes(t.name)
+        })));
+    });
+
+    // Start game
+    socket.on('startGame', (password) => {
+        let party = parties[password];
+        if (!party || socket.id !== party.hostId || party.gameStarted) return;
+        if (Object.keys(party.players).length === 0) return socket.emit('partyError', 'No players joined.');
+
+        // Build active tributes including AI
+        party.activeTributes = allTributes.map(t => {
+            let isAI = !Object.values(party.players).includes(t.name);
+            return {
+                ...t,
+                isAI,
+                socketId: isAI ? null : Object.keys(party.players).find(id => party.players[id] === t.name),
+                defending: false,
+                health: t.health // ensure correct starting health
+            };
+        });
+
+        party.turnOrder = party.activeTributes.map(t => t.name);
+        shuffle(party.turnOrder);
+        party.currentTurnIndex = 0;
+        party.gameStarted = true;
+
+        io.to(password).emit('gameStarted', { players: Object.values(party.players) });
+        setTimeout(() => nextTurn(password), 1000);
+    });
+
+    // Player action
+    socket.on('playerAction', ({ password, action, targetName }) => {
+        let party = parties[password];
+        if (!party || !party.gameStarted) return;
+        let tribute = getTributeByName(party.activeTributes, party.players[socket.id]);
+        if (!tribute) return;
+
+        tributeAction(party, tribute, action, targetName);
+        io.to(party.hostId).emit('combatUpdate', party.combatMessages);
+        party.combatMessages = [];
+        party.currentTurnIndex++;
+        setTimeout(() => nextTurn(password), 500);
+    });
+
+    // Reset party
+    socket.on('resetParty', (password) => {
+        let party = parties[password];
+        if (!party) return;
+        party.activeTributes = [];
+        party.turnOrder = [];
+        party.currentTurnIndex = 0;
+        party.combatMessages = [];
+        party.gameStarted = false;
+        io.to(password).emit('partyReset');
+    });
+
+    socket.on('disconnect', () => {
+        for (let password in parties) {
+            let party = parties[password];
+            if (party.players[socket.id]) {
+                delete party.players[socket.id];
+                io.to(party.hostId).emit('updatePlayers', Object.values(party.players));
+                if (party.hostId === socket.id) {
+                    let remainingIds = Object.keys(party.players);
+                    party.hostId = remainingIds[0] || null;
+                    if (party.hostId) io.to(party.hostId).emit('hostUpdate', true);
+                }
+            }
+        }
+    });
+});
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
