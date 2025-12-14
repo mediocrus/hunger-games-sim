@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hunger Games Lobby</title>
+<style>
+.selected { background-color: lightgreen; font-weight: bold; }
+li { margin: 5px 0; cursor: pointer; }
+button { margin-top: 10px; padding: 10px 15px; font-size: 16px; }
+#results { margin-top: 20px; white-space: pre-line; }
+</style>
+</head>
+<body>
+<h1>Hunger Games Lobby</h1>
+<p>Select your tribute (one per device):</p>
+<ul id="tribute-list"></ul>
+<button id="submit-selection">Submit Selection</button>
+<button id="start-game">Start Game</button>
+
+<div id="action-buttons" style="display:none;">
+  <h2>Choose your action:</h2>
+  <button data-action="attack">Attack</button>
+  <button data-action="defend">Defend</button>
+  <select id="target-select"></select>
+</div>
+
+<div id="results"></div>
+
+<script>
+let playerName = null;
+let turnOrder = [];
+
+// Fetch tributes
+function loadTributes() {
+  fetch('/tributes')
+    .then(res => res.json())
+    .then(data => {
+      const ul = document.getElementById('tribute-list');
+      ul.innerHTML = '';
+      data.forEach(t => {
+        const li = document.createElement('li');
+        li.textContent = t.name;
+        if (t.taken) li.style.color = 'gray';
+        li.addEventListener('click', () => {
+          if (t.taken) { alert('Tribute already taken'); return; }
+          playerName = t.name;
+          console.log('You selected:', playerName);
+        });
+        ul.appendChild(li);
+      });
+    });
+}
+
+loadTributes();
+
+// Submit selection
+document.getElementById('submit-selection').addEventListener('click', () => {
+  if (!playerName) { alert('Select a tribute!'); return; }
+  fetch('/select', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ selectedTribute: playerName })
+  })
+  .then(res=>res.json())
+  .then(data=>{
+    if(data.error){ alert(data.error); loadTributes(); return; }
+    alert('Selection submitted!');
+    loadTributes();
+  });
+});
+
+// Start game
+document.getElementById('start-game').addEventListener('click', () => {
+  fetch('/start',{method:'POST'})
+    .then(res=>res.json())
+    .then(data=>{
+      turnOrder = data.turnOrder;
+      document.getElementById('action-buttons').style.display = 'block';
+      updateTargets();
+      appendResult('Game started! Turn order: ' + turnOrder.join(', '));
+    });
+});
+
+// Action buttons
+document.querySelectorAll('#action-buttons button[data-action]').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const action = btn.dataset.action;
+    const target = document.getElementById('target-select').value;
+    if(action==='attack' && !target){ alert('Select a target'); return; }
+
+    fetch('/action',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ action, target })
+    })
+    .then(res=>res.json())
+    .then(data=>{
+      appendResult(data.results.join('\n'));
+      updateTargets();
+    });
+  });
+});
+
+function updateTargets(){
+  const select = document.getElementById('target-select');
+  select.innerHTML = '';
+  turnOrder.forEach(name=>{
+    select.innerHTML += `<option value="${name}">${name}</option>`;
+  });
+}
+
+function appendResult(text){
+  const div = document.getElementById('results');
+  div.textContent = text;
+}
+</script>
+</body>
+</html>
