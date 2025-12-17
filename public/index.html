@@ -1,107 +1,211 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Hunger Games Simulator</title>
-  <script src="/socket.io/socket.io.js"></script>
-  <style>
-    body { font-family: Arial; background:#111; color:#eee; }
-    button { margin:5px; padding:8px; }
-    .taken { opacity:0.4; }
-  </style>
+<meta charset="UTF-8" />
+<title>Hunger Games Simulator</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background:#111; color:#eee; }
+  button { margin: 5px; padding:6px 10px; }
+  input { margin:5px; padding:5px; }
+
+  .hidden { display:none; }
+
+  #lobby, #partyRoom, #gameArea {
+    border:1px solid #444;
+    padding:10px;
+    margin-top:10px;
+  }
+
+  .tribute-btn {
+    background:#333;
+    color:#eee;
+  }
+  .tribute-btn.taken {
+    background:#666;
+    color:#999;
+    pointer-events:none;
+  }
+
+  #log {
+    background:#000;
+    border:1px solid #444;
+    height:200px;
+    overflow-y:auto;
+    padding:5px;
+    margin-top:10px;
+    font-size:14px;
+  }
+
+  #chat {
+    margin-top:10px;
+  }
+</style>
 </head>
 <body>
 
 <h1>Hunger Games Simulator</h1>
 
-<div id="menu">
+<!-- ================= LOBBY ================= -->
+<div id="lobby">
   <button onclick="showCreate()">Create Party</button>
   <button onclick="showJoin()">Join Party</button>
+
+  <div id="createArea" class="hidden">
+    <h3>Create Party</h3>
+    <input id="createName" placeholder="Party Name">
+    <input id="createPass" type="password" placeholder="Password">
+    <button onclick="createParty()">Create</button>
+  </div>
+
+  <div id="joinArea" class="hidden">
+    <h3>Join Party</h3>
+    <div id="partyList"></div>
+  </div>
 </div>
 
-<div id="create" style="display:none">
-  <input id="cname" placeholder="Party Name">
-  <input id="cpass" placeholder="Password">
-  <button onclick="createParty()">Create</button>
-</div>
-
-<div id="join" style="display:none">
-  <div id="partyList"></div>
-</div>
-
-<div id="lobby" style="display:none">
-  <h2>Lobby</h2>
+<!-- ================= PARTY ROOM ================= -->
+<div id="partyRoom" class="hidden">
+  <h2 id="partyTitle"></h2>
   <p id="playerCount"></p>
-  <div id="tributes"></div>
-  <button id="startBtn" onclick="startGame()" style="display:none">START GAME</button>
+
+  <h3>Tributes</h3>
+  <div id="tributeList"></div>
+
+  <button id="startBtn" class="hidden" onclick="startGame()">START GAME</button>
+</div>
+
+<!-- ================= GAME AREA ================= -->
+<div id="gameArea" class="hidden">
+  <h2 id="phaseInfo"></h2>
+
+  <div id="log"></div>
+
+  <div id="actionArea">
+    <button onclick="sendMove()">Move</button>
+    <button onclick="sendAttack()">Attack</button>
+    <button onclick="endTurn()">End Turn</button>
+  </div>
+
+  <div id="chat">
+    <input id="chatInput" placeholder="Spectator chat only">
+    <button onclick="sendChat()">Send</button>
+  </div>
 </div>
 
 <script>
 const socket = io();
-let currentParty = null;
 
+let currentPartyId = null;
+let myTribute = null;
+let isHost = false;
+
+// ---------- UI helpers ----------
 function showCreate() {
-  document.getElementById("create").style.display="block";
-}
-function showJoin() {
-  socket.emit("getParties");
-  document.getElementById("join").style.display="block";
+  document.getElementById("createArea").classList.remove("hidden");
+  document.getElementById("joinArea").classList.add("hidden");
 }
 
+function showJoin() {
+  document.getElementById("joinArea").classList.remove("hidden");
+  document.getElementById("createArea").classList.add("hidden");
+  socket.emit("requestPartyList");
+}
+
+// ---------- Party creation ----------
 function createParty() {
   socket.emit("createParty", {
-    name: cname.value,
-    password: cpass.value
+    partyName: createName.value,
+    password: createPass.value
   });
 }
 
+// ---------- Join ----------
+function joinParty(id) {
+  const pass = prompt("Enter party password:");
+  socket.emit("joinParty", { partyId:id, password:pass });
+}
+
+// ---------- Start ----------
+function startGame() {
+  socket.emit("startGame", { partyId: currentPartyId });
+}
+
+// ---------- Game actions ----------
+function sendMove() {
+  socket.emit("playerAction", { partyId:currentPartyId, action:"move", destination:0 });
+}
+function sendAttack() {
+  socket.emit("playerAction", { partyId:currentPartyId, action:"attack", target:null });
+}
+function endTurn() {
+  socket.emit("playerAction", { partyId:currentPartyId, action:"wait" });
+}
+
+// ---------- Socket events ----------
 socket.on("partyList", parties => {
   const div = document.getElementById("partyList");
-  div.innerHTML="";
+  div.innerHTML = "";
   parties.forEach(p => {
     const b = document.createElement("button");
     b.textContent = `${p.name} (${p.players}/8)`;
-    b.onclick = () => {
-      const pass = prompt("Password?");
-      socket.emit("joinParty", { partyId: p.id, password: pass });
-    };
+    b.onclick = () => joinParty(p.id);
     div.appendChild(b);
   });
 });
 
-socket.on("partyUpdate", party => {
-  currentParty = party;
-  document.getElementById("menu").style.display="none";
-  document.getElementById("create").style.display="none";
-  document.getElementById("join").style.display="none";
-  document.getElementById("lobby").style.display="block";
-
-  document.getElementById("playerCount").textContent =
-    `Players: ${Object.keys(party.players).length}/8`;
-
-  const tribDiv = document.getElementById("tributes");
-  tribDiv.innerHTML="";
-  party.tributes.forEach(t => {
-    const b = document.createElement("button");
-    b.textContent = t.name;
-    if (t.taken) b.className="taken";
-    b.onclick = () => socket.emit("selectTribute", {
-      partyId: party.id,
-      tributeName: t.name
-    });
-    tribDiv.appendChild(b);
-  });
-
-  if (party.host === socket.id && !party.started) {
-    document.getElementById("startBtn").style.display="block";
-  }
+socket.on("partyCreated", data => {
+  currentPartyId = data.partyId;
+  document.getElementById("lobby").classList.add("hidden");
+  document.getElementById("partyRoom").classList.remove("hidden");
+  document.getElementById("partyTitle").textContent = data.partyName;
 });
 
-function startGame() {
-  socket.emit("startGame", currentParty.id);
-}
+socket.on("updateParty", party => {
+  if (!party) return;
 
-socket.on("gameStarted", () => {
-  alert("Game started!");
+  currentPartyId = party.id;
+  isHost = party.hostSocketId === socket.id;
+
+  document.getElementById("playerCount").textContent =
+    `Players: ${Object.values(party.players).filter(p=>p.tributeName).length}/8`;
+
+  const tDiv = document.getElementById("tributeList");
+  tDiv.innerHTML = "";
+
+  Object.values(party.tributes).forEach(t => {
+    const btn = document.createElement("button");
+    btn.textContent = t.name;
+    btn.className = "tribute-btn";
+    if (!t.isAI) btn.classList.add("taken");
+    btn.onclick = () => {
+      myTribute = t.name;
+      socket.emit("selectTribute",{ partyId:party.id, tributeName:t.name });
+    };
+    tDiv.appendChild(btn);
+  });
+
+  document.getElementById("startBtn").classList.toggle("hidden", !isHost);
+});
+
+socket.on("gameStarted", party => {
+  // 🔥 THIS IS THE FIX 🔥
+  document.getElementById("partyRoom").classList.add("hidden");
+  document.getElementById("gameArea").classList.remove("hidden");
+
+  document.getElementById("log").innerHTML +=
+    `<div>Game started. Day ${party.day}</div>`;
+});
+
+socket.on("newPhase", data => {
+  document.getElementById("phaseInfo").textContent =
+    `Day ${data.day} – ${data.phase.toUpperCase()}`;
+});
+
+socket.on("endOfDaySummary", s => {
+  const log = document.getElementById("log");
+  log.innerHTML += `<hr><div><b>Day ${s.day} Summary</b></div>`;
+  s.deaths.forEach(d => log.innerHTML += `<div>${d}</div>`);
 });
 </script>
 
