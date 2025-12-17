@@ -1,166 +1,182 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Hunger Games Simulator</title>
+<meta charset="UTF-8">
+<title>Hunger Games Simulator</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+body { font-family: Arial, sans-serif; }
+button { margin: 5px; }
+#partyList button { display:block; margin:3px; }
+#game, #tributeSelect, #phaseArea, #summary, #spectatorChatArea { display:none; }
+.tributeButton.chosen { background-color: grey; color: white; }
+</style>
 </head>
 <body>
-    <h1>Hunger Games Simulator</h1>
+<h1>Hunger Games Simulator</h1>
 
-    <!-- Party creation / join section -->
-    <div id="party-section">
-        <input type="text" id="party-password" placeholder="Party Password">
-        <button id="create-party">Create Party</button>
-        <input type="text" id="join-tribute" placeholder="Tribute Name">
-        <button id="join-party">Join Party</button>
-        <p id="party-message"></p>
-        <p id="players-list"></p>
+<div id="lobby">
+  <button id="createBtn">Create Party</button>
+  <button id="joinBtn">Join Party</button>
+</div>
 
-        <h3>Available Tributes:</h3>
-        <ul id="tribute-list"></ul>
+<div id="createPartyForm" style="display:none;">
+  <input id="partyName" placeholder="Party Name">
+  <input id="partyPass" placeholder="Password" type="password">
+  <button onclick="createParty()">Create</button>
+</div>
 
-        <button id="start-game" disabled>Start Game</button>
-    </div>
+<div id="joinPartyForm" style="display:none;">
+  <div id="partyList"></div>
+</div>
 
-    <!-- Combat options -->
-    <div id="combat-options" style="display:none;">
-        <p id="combat-message"></p>
-        <select id="target-select"></select>
-        <button id="attack-btn">Attack</button>
-        <button id="defend-btn">Defend</button>
-        <button id="submit-action">Submit Action</button>
-        <button id="reset-game">Reset Game</button>
-    </div>
+<div id="tributeSelect">
+  <h2>Select Your Tribute</h2>
+  <div id="availableTributes"></div>
+  <button onclick="confirmTribute()">Confirm Selection</button>
+  <div id="playerList"></div>
+  <button id="startGameBtn" onclick="startGame()" style="display:none;">Start Game</button>
+</div>
 
-    <script src="/socket.io/socket.io.js"></script>
-    <script>
-        const socket = io();
+<div id="game">
+  <h2>Game Area</h2>
+  <div id="phaseArea">
+    <p id="phaseInfo"></p>
+    <div id="actionArea"></div>
+    <button onclick="endTurn()">End Turn</button>
+  </div>
+</div>
 
-        const partySection = document.getElementById('party-section');
-        const combatDiv = document.getElementById('combat-options');
+<div id="summary">
+  <h2>End of Day Summary</h2>
+  <div id="summaryContent"></div>
+</div>
 
-        const partyPasswordInput = document.getElementById('party-password');
-        const joinTributeInput = document.getElementById('join-tribute');
-        const createPartyBtn = document.getElementById('create-party');
-        const joinPartyBtn = document.getElementById('join-party');
-        const startGameBtn = document.getElementById('start-game');
-        const resetGameBtn = document.getElementById('reset-game');
-        const partyMessage = document.getElementById('party-message');
-        const playersList = document.getElementById('players-list');
-        const tributeList = document.getElementById('tribute-list');
+<div id="spectatorChatArea">
+  <h3>Spectator Chat</h3>
+  <div id="spectatorMessages"></div>
+  <input id="spectatorMsgInput" placeholder="Type a message">
+  <button onclick="sendSpectatorMessage()">Send</button>
+</div>
 
-        const combatMessage = document.getElementById('combat-message');
-        const targetSelect = document.getElementById('target-select');
-        const attackBtn = document.getElementById('attack-btn');
-        const defendBtn = document.getElementById('defend-btn');
-        const submitAction = document.getElementById('submit-action');
+<script>
+const socket = io();
+let currentPartyId = null;
+let myTribute = null;
+let isSpectator = false;
 
-        let currentParty = '';
-        let isHost = false;
-        let selectedAction = null;
-        let selectedTarget = null;
+// Lobby UI
+document.getElementById("createBtn").onclick = () => {
+  document.getElementById("createPartyForm").style.display="block";
+  document.getElementById("joinPartyForm").style.display="none";
+};
+document.getElementById("joinBtn").onclick = () => {
+  document.getElementById("joinPartyForm").style.display="block";
+  document.getElementById("createPartyForm").style.display="none";
+};
 
-        // --- Party events ---
-        createPartyBtn.onclick = () => {
-            const password = partyPasswordInput.value.trim();
-            if (!password) return alert('Enter a password.');
-            socket.emit('createParty', password);
+// CREATE PARTY
+function createParty() {
+  const name = document.getElementById("partyName").value;
+  const pass = document.getElementById("partyPass").value;
+  socket.emit("createParty",{partyName:name,password:pass});
+}
+
+// JOIN PARTY
+socket.on("liveParties", parties => {
+  const div = document.getElementById("partyList");
+  div.innerHTML="";
+  parties.forEach(p=>{
+    const btn = document.createElement("button");
+    btn.textContent=p.name;
+    btn.onclick = ()=>{
+      const password = prompt("Enter password for "+p.name);
+      socket.emit("joinParty",{partyId:p.id,password});
+      currentPartyId=p.id;
+    };
+    div.appendChild(btn);
+  });
+});
+
+// HANDLE SPECTATOR STATUS
+socket.on("spectatorStatus", s => { isSpectator = s; if(isSpectator) document.getElementById("spectatorChatArea").style.display="block"; });
+
+// PARTY CREATED
+socket.on("partyCreated", data => {
+  currentPartyId = data.partyId;
+  document.getElementById("createPartyForm").style.display="none";
+  document.getElementById("tributeSelect").style.display="block";
+});
+
+// UPDATE PARTY
+socket.on("updateParty", party => {
+  if(document.getElementById("availableTributes")){
+    const div = document.getElementById("availableTributes");
+    div.innerHTML="";
+    Object.keys(party.tributes).forEach(t=>{
+      const trib = party.tributes[t];
+      if(!Object.values(party.players).some(p=>p.tributeName===t)){
+        const btn = document.createElement("button");
+        btn.textContent=t;
+        btn.className="tributeButton";
+        btn.onclick = ()=>{
+          myTribute=t;
+          Array.from(div.children).forEach(c=>c.classList.remove("chosen"));
+          btn.classList.add("chosen");
         };
+        div.appendChild(btn);
+      }
+    });
+  }
 
-        joinPartyBtn.onclick = () => {
-            const password = partyPasswordInput.value.trim();
-            const tributeName = joinTributeInput.value.trim();
-            if (!password || !tributeName) return alert('Enter password and tribute name.');
-            currentParty = password;
-            socket.emit('joinParty', { password, tributeName });
-        };
+  // Player list + host
+  const plDiv = document.getElementById("playerList");
+  plDiv.innerHTML="";
+  Object.values(party.players).forEach(p=>{
+    const span = document.createElement("div");
+    let label = p.tributeName || (p.isSpectator?"Spectator":"No Tribute");
+    if(p.isHost) label += " (Host)";
+    plDiv.appendChild(span).textContent=label;
+  });
 
-        startGameBtn.onclick = () => {
-            socket.emit('startGame', currentParty);
-        };
+  // Show start button only to host
+  if(party.hostSocketId === socket.id && !party.started) document.getElementById("startGameBtn").style.display="block";
+});
 
-        resetGameBtn.onclick = () => {
-            socket.emit('resetParty', currentParty);
-        };
+// CONFIRM TRIBUTE
+function confirmTribute() {
+  if(!myTribute && !isSpectator) return alert("Pick a tribute!");
+  socket.emit("selectTribute",{partyId:currentPartyId,tributeName:myTribute});
+  document.getElementById("tributeSelect").style.display="none";
+  document.getElementById("game").style.display="block";
+}
 
-        // --- Combat events ---
-        attackBtn.onclick = () => selectedAction = 'attack';
-        defendBtn.onclick = () => selectedAction = 'defend';
-        submitAction.onclick = () => {
-            selectedTarget = targetSelect.value;
-            if (!selectedAction) return alert('Choose an action!');
-            socket.emit('playerAction', { password: currentParty, action: selectedAction, targetName: selectedTarget });
-            selectedAction = null;
-            combatDiv.style.display = 'none';
-        };
+// START GAME
+function startGame() { socket.emit("startGame",{partyId:currentPartyId}); }
 
-        // --- Socket listeners ---
-        socket.on('partyCreated', (password) => {
-            currentParty = password;
-            isHost = true;
-            startGameBtn.disabled = false;
-            partyMessage.textContent = `Party created: ${password}. You are the host.`;
-        });
+// NEW PHASE
+socket.on("newPhase", data => { document.getElementById("phaseInfo").textContent=`Day ${data.day} - ${data.phase}`; });
 
-        socket.on('joinedParty', ({ password, tributeName, host }) => {
-            currentParty = password;
-            isHost = host;
-            startGameBtn.disabled = !host;
-            partyMessage.textContent = `Joined party: ${password} as ${tributeName}`;
-        });
+// END OF DAY SUMMARY
+socket.on("endOfDaySummary", data => {
+  const s = document.getElementById("summaryContent");
+  s.innerHTML=`<p>Day ${data.day}</p><p>Deaths: ${data.deaths.join(", ")}</p><p>Loot Drops: ${data.lootDrops.map(l=>l.region).join(", ")}</p>`;
+  document.getElementById("summary").style.display="block";
+});
 
-        socket.on('updatePlayers', (players) => {
-            playersList.textContent = 'Players in party: ' + players.join(', ');
-        });
-
-        socket.on('updateAvailableTributes', (tributes) => {
-            tributeList.innerHTML = '';
-            tributes.forEach(t => {
-                const li = document.createElement('li');
-                li.textContent = `${t.name} ${t.taken ? '(Taken)' : ''}`;
-                tributeList.appendChild(li);
-            });
-        });
-
-        socket.on('partyError', (msg) => {
-            partyMessage.textContent = msg;
-        });
-
-        socket.on('gameStarted', () => {
-            partyMessage.textContent = 'Game started!';
-            partySection.style.display = 'none';
-            combatDiv.style.display = 'block';
-        });
-
-        socket.on('combatUpdate', (messages) => {
-            combatMessage.textContent = messages.join('\n');
-        });
-
-        socket.on('yourTurn', ({ tributeName, targets }) => {
-            combatDiv.style.display = 'block';
-            combatMessage.textContent = `It's your turn: ${tributeName}`;
-            targetSelect.innerHTML = '';
-            targets.forEach(t => {
-                const option = document.createElement('option');
-                option.value = t;
-                option.textContent = t;
-                targetSelect.appendChild(option);
-            });
-        });
-
-        socket.on('gameOver', (winner) => {
-            combatMessage.textContent = `Game over! Winner: ${winner}`;
-            combatDiv.style.display = 'none';
-            partySection.style.display = 'block';
-        });
-
-        socket.on('partyReset', () => {
-            combatDiv.style.display = 'none';
-            partySection.style.display = 'block';
-            partyMessage.textContent = 'Tributes reset! You can create or join a party again.';
-            playersList.textContent = '';
-            tributeList.innerHTML = '';
-        });
-    </script>
+// SPECTATOR CHAT
+socket.on("spectatorMessage", ({name,message})=>{
+  const div = document.getElementById("spectatorMessages");
+  const p = document.createElement("p");
+  p.textContent=`${name}: ${message}`;
+  div.appendChild(p);
+});
+function sendSpectatorMessage(){
+  const msg = document.getElementById("spectatorMsgInput").value;
+  if(!msg) return;
+  socket.emit("spectatorChat",{partyId:currentPartyId,message:msg});
+  document.getElementById("spectatorMsgInput").value="";
+}
+</script>
 </body>
 </html>
