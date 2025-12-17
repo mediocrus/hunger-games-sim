@@ -1,182 +1,109 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-<meta charset="UTF-8">
-<title>Hunger Games Simulator</title>
-<script src="/socket.io/socket.io.js"></script>
-<style>
-body { font-family: Arial, sans-serif; }
-button { margin: 5px; }
-#partyList button { display:block; margin:3px; }
-#game, #tributeSelect, #phaseArea, #summary, #spectatorChatArea { display:none; }
-.tributeButton.chosen { background-color: grey; color: white; }
-</style>
+  <title>Hunger Games Simulator</title>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body { font-family: Arial; background:#111; color:#eee; }
+    button { margin:5px; padding:8px; }
+    .taken { opacity:0.4; }
+  </style>
 </head>
 <body>
+
 <h1>Hunger Games Simulator</h1>
 
-<div id="lobby">
-  <button id="createBtn">Create Party</button>
-  <button id="joinBtn">Join Party</button>
+<div id="menu">
+  <button onclick="showCreate()">Create Party</button>
+  <button onclick="showJoin()">Join Party</button>
 </div>
 
-<div id="createPartyForm" style="display:none;">
-  <input id="partyName" placeholder="Party Name">
-  <input id="partyPass" placeholder="Password" type="password">
+<div id="create" style="display:none">
+  <input id="cname" placeholder="Party Name">
+  <input id="cpass" placeholder="Password">
   <button onclick="createParty()">Create</button>
 </div>
 
-<div id="joinPartyForm" style="display:none;">
+<div id="join" style="display:none">
   <div id="partyList"></div>
 </div>
 
-<div id="tributeSelect">
-  <h2>Select Your Tribute</h2>
-  <div id="availableTributes"></div>
-  <button onclick="confirmTribute()">Confirm Selection</button>
-  <div id="playerList"></div>
-  <button id="startGameBtn" onclick="startGame()" style="display:none;">Start Game</button>
-</div>
-
-<div id="game">
-  <h2>Game Area</h2>
-  <div id="phaseArea">
-    <p id="phaseInfo"></p>
-    <div id="actionArea"></div>
-    <button onclick="endTurn()">End Turn</button>
-  </div>
-</div>
-
-<div id="summary">
-  <h2>End of Day Summary</h2>
-  <div id="summaryContent"></div>
-</div>
-
-<div id="spectatorChatArea">
-  <h3>Spectator Chat</h3>
-  <div id="spectatorMessages"></div>
-  <input id="spectatorMsgInput" placeholder="Type a message">
-  <button onclick="sendSpectatorMessage()">Send</button>
+<div id="lobby" style="display:none">
+  <h2>Lobby</h2>
+  <p id="playerCount"></p>
+  <div id="tributes"></div>
+  <button id="startBtn" onclick="startGame()" style="display:none">START GAME</button>
 </div>
 
 <script>
 const socket = io();
-let currentPartyId = null;
-let myTribute = null;
-let isSpectator = false;
+let currentParty = null;
 
-// Lobby UI
-document.getElementById("createBtn").onclick = () => {
-  document.getElementById("createPartyForm").style.display="block";
-  document.getElementById("joinPartyForm").style.display="none";
-};
-document.getElementById("joinBtn").onclick = () => {
-  document.getElementById("joinPartyForm").style.display="block";
-  document.getElementById("createPartyForm").style.display="none";
-};
-
-// CREATE PARTY
-function createParty() {
-  const name = document.getElementById("partyName").value;
-  const pass = document.getElementById("partyPass").value;
-  socket.emit("createParty",{partyName:name,password:pass});
+function showCreate() {
+  document.getElementById("create").style.display="block";
+}
+function showJoin() {
+  socket.emit("getParties");
+  document.getElementById("join").style.display="block";
 }
 
-// JOIN PARTY
-socket.on("liveParties", parties => {
+function createParty() {
+  socket.emit("createParty", {
+    name: cname.value,
+    password: cpass.value
+  });
+}
+
+socket.on("partyList", parties => {
   const div = document.getElementById("partyList");
   div.innerHTML="";
-  parties.forEach(p=>{
-    const btn = document.createElement("button");
-    btn.textContent=p.name;
-    btn.onclick = ()=>{
-      const password = prompt("Enter password for "+p.name);
-      socket.emit("joinParty",{partyId:p.id,password});
-      currentPartyId=p.id;
+  parties.forEach(p => {
+    const b = document.createElement("button");
+    b.textContent = `${p.name} (${p.players}/8)`;
+    b.onclick = () => {
+      const pass = prompt("Password?");
+      socket.emit("joinParty", { partyId: p.id, password: pass });
     };
-    div.appendChild(btn);
+    div.appendChild(b);
   });
 });
 
-// HANDLE SPECTATOR STATUS
-socket.on("spectatorStatus", s => { isSpectator = s; if(isSpectator) document.getElementById("spectatorChatArea").style.display="block"; });
+socket.on("partyUpdate", party => {
+  currentParty = party;
+  document.getElementById("menu").style.display="none";
+  document.getElementById("create").style.display="none";
+  document.getElementById("join").style.display="none";
+  document.getElementById("lobby").style.display="block";
 
-// PARTY CREATED
-socket.on("partyCreated", data => {
-  currentPartyId = data.partyId;
-  document.getElementById("createPartyForm").style.display="none";
-  document.getElementById("tributeSelect").style.display="block";
-});
+  document.getElementById("playerCount").textContent =
+    `Players: ${Object.keys(party.players).length}/8`;
 
-// UPDATE PARTY
-socket.on("updateParty", party => {
-  if(document.getElementById("availableTributes")){
-    const div = document.getElementById("availableTributes");
-    div.innerHTML="";
-    Object.keys(party.tributes).forEach(t=>{
-      const trib = party.tributes[t];
-      if(!Object.values(party.players).some(p=>p.tributeName===t)){
-        const btn = document.createElement("button");
-        btn.textContent=t;
-        btn.className="tributeButton";
-        btn.onclick = ()=>{
-          myTribute=t;
-          Array.from(div.children).forEach(c=>c.classList.remove("chosen"));
-          btn.classList.add("chosen");
-        };
-        div.appendChild(btn);
-      }
+  const tribDiv = document.getElementById("tributes");
+  tribDiv.innerHTML="";
+  party.tributes.forEach(t => {
+    const b = document.createElement("button");
+    b.textContent = t.name;
+    if (t.taken) b.className="taken";
+    b.onclick = () => socket.emit("selectTribute", {
+      partyId: party.id,
+      tributeName: t.name
     });
-  }
-
-  // Player list + host
-  const plDiv = document.getElementById("playerList");
-  plDiv.innerHTML="";
-  Object.values(party.players).forEach(p=>{
-    const span = document.createElement("div");
-    let label = p.tributeName || (p.isSpectator?"Spectator":"No Tribute");
-    if(p.isHost) label += " (Host)";
-    plDiv.appendChild(span).textContent=label;
+    tribDiv.appendChild(b);
   });
 
-  // Show start button only to host
-  if(party.hostSocketId === socket.id && !party.started) document.getElementById("startGameBtn").style.display="block";
+  if (party.host === socket.id && !party.started) {
+    document.getElementById("startBtn").style.display="block";
+  }
 });
 
-// CONFIRM TRIBUTE
-function confirmTribute() {
-  if(!myTribute && !isSpectator) return alert("Pick a tribute!");
-  socket.emit("selectTribute",{partyId:currentPartyId,tributeName:myTribute});
-  document.getElementById("tributeSelect").style.display="none";
-  document.getElementById("game").style.display="block";
+function startGame() {
+  socket.emit("startGame", currentParty.id);
 }
 
-// START GAME
-function startGame() { socket.emit("startGame",{partyId:currentPartyId}); }
-
-// NEW PHASE
-socket.on("newPhase", data => { document.getElementById("phaseInfo").textContent=`Day ${data.day} - ${data.phase}`; });
-
-// END OF DAY SUMMARY
-socket.on("endOfDaySummary", data => {
-  const s = document.getElementById("summaryContent");
-  s.innerHTML=`<p>Day ${data.day}</p><p>Deaths: ${data.deaths.join(", ")}</p><p>Loot Drops: ${data.lootDrops.map(l=>l.region).join(", ")}</p>`;
-  document.getElementById("summary").style.display="block";
+socket.on("gameStarted", () => {
+  alert("Game started!");
 });
-
-// SPECTATOR CHAT
-socket.on("spectatorMessage", ({name,message})=>{
-  const div = document.getElementById("spectatorMessages");
-  const p = document.createElement("p");
-  p.textContent=`${name}: ${message}`;
-  div.appendChild(p);
-});
-function sendSpectatorMessage(){
-  const msg = document.getElementById("spectatorMsgInput").value;
-  if(!msg) return;
-  socket.emit("spectatorChat",{partyId:currentPartyId,message:msg});
-  document.getElementById("spectatorMsgInput").value="";
-}
 </script>
+
 </body>
 </html>
